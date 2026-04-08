@@ -1,6 +1,6 @@
 {
   "name": "@nexfetch/rest",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Framework-agnostic REST API client with cache, retry, dedup, and optional schema validation",
   "type": "module",
   "main": "./dist/index.js",
