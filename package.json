@@ -1,6 +1,6 @@
 {
   "name": "@nexfetch/rest",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Framework-agnostic REST API client with cache, retry, dedup, and optional schema validation",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,7 +29,18 @@
     "LICENSE"
   ],
   "sideEffects": false,
-  "keywords": ["api-client", "rest", "fetch", "cache", "nanostores", "react", "vue", "framework-agnostic", "retry", "dedup"],
+  "keywords": [
+    "api-client",
+    "rest",
+    "fetch",
+    "cache",
+    "nanostores",
+    "react",
+    "vue",
+    "framework-agnostic",
+    "retry",
+    "dedup"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
