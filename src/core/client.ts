@@ -1,4 +1,4 @@
-import type { ApiClient, ClientOptions, EndpointDef, FetchInput, HookFactory, NamespacedEndpoints } from "./types";
+import type { ApiClient, ClientOptions, EndpointDef, FetchInput, HookFactory, InfiniteQueryOptions, NamespacedEndpoints, QueryOptions } from "./types";
 import { Fetcher } from "./fetcher";
 import { QueryCache } from "./cache";
 
@@ -23,7 +23,7 @@ export function createClient<T extends NamespacedEndpoints>(
       return new Proxy({} as Record<string, unknown>, {
         get(_, method: string) {
           if (method === "useQuery") {
-            return (key: string, input?: FetchInput, opts?: { enabled?: boolean }) => {
+            return (key: string, input?: FetchInput, opts?: QueryOptions) => {
               const endpoint = nsEndpoints[key] as EndpointDef;
               if (!endpoint) throw new Error(`Endpoint "${namespace}.${key}" not found`);
               return hooks.useQuery(namespace, key, endpoint, input, opts);
@@ -36,10 +36,15 @@ export function createClient<T extends NamespacedEndpoints>(
               return hooks.useMutation(namespace, key, endpoint);
             };
           }
-          const endpoint = nsEndpoints[method] as EndpointDef | undefined;
-          if (endpoint) {
-            return (input?: FetchInput) => fetcher.request(endpoint, input);
+          if (method === "useInfiniteQuery") {
+            return (key: string, opts: InfiniteQueryOptions) => {
+              const endpoint = nsEndpoints[key] as EndpointDef;
+              if (!endpoint) throw new Error(`Endpoint "${namespace}.${key}" not found`);
+              return hooks.useInfiniteQuery(namespace, key, endpoint, opts);
+            };
           }
+          const endpoint = nsEndpoints[method] as EndpointDef | undefined;
+          if (endpoint) return (input?: FetchInput) => fetcher.request(endpoint, input);
           return undefined;
         },
       });

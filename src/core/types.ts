@@ -17,7 +17,9 @@ export interface EndpointDef {
   response?: Schema;
   headers?: Record<string, string>;
   staleTime?: number;
-  invalidate?: string[];
+  tags?: string[];
+  invalidates?: string[];
+  transform?: (raw: unknown) => unknown;
 }
 
 export type EndpointMap = Record<string, EndpointDef>;
@@ -32,7 +34,6 @@ type InputParts<E extends EndpointDef> =
   (E["query"] extends Schema ? { query: Infer<E["query"]> } : {}) &
   (E["params"] extends Schema ? { params: Infer<E["params"]> } : {});
 
-// void when endpoint has no body/query/params
 export type ResolvedInput<E extends EndpointDef> =
   InputParts<E> extends Record<string, never> ? void : InputParts<E>;
 
@@ -48,12 +49,44 @@ export interface QueryState<T> {
   isFetching: boolean;
 }
 
+export interface MutateOptions<T> {
+  onSuccess?: (data: T) => void;
+  onError?: (error: Error) => void;
+}
+
 export interface MutationHandle<TInput, TOutput> {
   data: TOutput | null;
   isPending: boolean;
   error: Error | null;
-  mutate: (input: TInput) => Promise<TOutput>;
+  mutate: (input: TInput, opts?: MutateOptions<TOutput>) => Promise<TOutput>;
   reset: () => void;
+}
+
+export interface InfiniteQueryState<T> {
+  data: T[];
+  pages: T[][];
+  isPending: boolean;
+  error: Error | null;
+  isFetchingMore: boolean;
+  hasMore: boolean;
+  fetchNext: () => Promise<void>;
+}
+
+// ── Options ──────────────────────────────────────────────────────────────────
+
+export interface QueryOptions {
+  enabled?: boolean;
+  refetchInterval?: number;
+  select?: (data: unknown) => unknown;
+}
+
+export interface InfiniteQueryOptions<T = unknown> {
+  query?: Record<string, unknown>;
+  params?: Record<string, string>;
+  getNextPageParam: (lastPage: T[], allPages: T[][]) => unknown | undefined;
+  select?: (pages: T[][]) => unknown;
+  enabled?: boolean;
+  pageParam?: string;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -98,6 +131,7 @@ export class ApiError extends Error {
 export interface QueryEntry<T = unknown> {
   $state: ReadableAtom<QueryState<T>>;
   queryKey: string;
+  tags: string[];
   fetchedAt: number;
   subscribers: number;
   staleTime: number;
@@ -105,7 +139,7 @@ export interface QueryEntry<T = unknown> {
   gcTimer: ReturnType<typeof setTimeout> | null;
 }
 
-// ── Fetcher input (always this shape) ────────────────────────────────────────
+// ── Fetcher input ────────────────────────────────────────────────────────────
 
 export interface FetchInput {
   body?: unknown;
@@ -113,19 +147,24 @@ export interface FetchInput {
   params?: Record<string, string>;
 }
 
-// ── Client type (what Proxy returns) ─────────────────────────────────────────
+// ── Client type ──────────────────────────────────────────────────────────────
 
 type NamespaceApi<E extends EndpointMap> = {
   useQuery: <K extends string & keyof E>(
     key: K,
     ...args: ResolvedInput<E[K]> extends void
-      ? [input?: void, opts?: { enabled?: boolean }]
-      : [input: ResolvedInput<E[K]>, opts?: { enabled?: boolean }]
+      ? [input?: void, opts?: QueryOptions]
+      : [input: ResolvedInput<E[K]>, opts?: QueryOptions]
   ) => QueryState<InferResponse<E[K]>>;
 
   useMutation: <K extends string & keyof E>(
     key: K,
   ) => MutationHandle<ResolvedInput<E[K]>, InferResponse<E[K]>>;
+
+  useInfiniteQuery: <K extends string & keyof E>(
+    key: K,
+    opts: InfiniteQueryOptions<InferResponse<E[K]>>,
+  ) => InfiniteQueryState<InferResponse<E[K]>>;
 } & {
   [K in string & keyof E]: (
     ...args: ResolvedInput<E[K]> extends void ? [] : [input: ResolvedInput<E[K]>]
@@ -136,9 +175,10 @@ export type ApiClient<T extends NamespacedEndpoints> = {
   [NS in string & keyof T]: NamespaceApi<T[NS]>;
 };
 
-// ── Hook factory (framework adapters implement this) ─────────────────────────
+// ── Hook factory ─────────────────────────────────────────────────────────────
 
 export interface HookFactory {
-  useQuery(namespace: string, key: string, endpoint: EndpointDef, input: FetchInput | undefined, opts?: { enabled?: boolean }): QueryState<unknown>;
+  useQuery(namespace: string, key: string, endpoint: EndpointDef, input: FetchInput | undefined, opts?: QueryOptions): QueryState<unknown>;
   useMutation(namespace: string, key: string, endpoint: EndpointDef): MutationHandle<unknown, unknown>;
+  useInfiniteQuery(namespace: string, key: string, endpoint: EndpointDef, opts: InfiniteQueryOptions): InfiniteQueryState<unknown>;
 }
