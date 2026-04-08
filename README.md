@@ -188,21 +188,41 @@ const { data } = api.notifications.useQuery("list", undefined, {
 
 ### Infinite Query (Pagination)
 
-Composable hook for scroll-based pagination:
+Composable hook for scroll-based pagination. Supports 3 strategies — just declare the type:
 
+**Offset pagination** (page numbers):
 ```typescript
 const repos = api.git.useInfiniteQuery("repos", {
   query: { provider: "github" },
-  getNextPageParam: (lastPage, allPages) =>
-    lastPage.length === 100 ? allPages.length + 1 : undefined,
+  pagination: { type: "offset", pageSize: 100 },
 });
+// hasMore = lastPage.length >= 100, auto-increments ?page=N
+```
 
-// repos.data       — flat array of all pages
-// repos.pages      — array of page arrays
-// repos.fetchNext() — load next page
-// repos.hasMore     — boolean
-// repos.isFetchingMore — boolean
-// repos.isPending   — true during first page load
+**Cursor pagination** (token-based):
+```typescript
+const items = api.items.useInfiniteQuery("list", {
+  pagination: { type: "cursor", cursorField: "nextCursor" },
+});
+// Reads nextCursor from response, passes as ?cursor=X on next fetch
+```
+
+**Total-count pagination** (server tells total):
+```typescript
+const items = api.items.useInfiniteQuery("list", {
+  pagination: { type: "total", totalField: "total", pageSize: 20 },
+});
+// hasMore = currentPage < ceil(total / pageSize)
+```
+
+**All return the same interface:**
+```typescript
+repos.data            // flat array of all pages
+repos.pages           // array of page arrays
+repos.fetchNext()     // load next page
+repos.hasMore         // boolean
+repos.isFetchingMore  // boolean
+repos.isPending       // true during first page load
 ```
 
 ### Retry

@@ -74,48 +74,73 @@ export function createReactHooks(fetcher: Fetcher, cache: QueryCache): HookFacto
     useInfiniteQuery(namespace: string, key: string, endpoint: EndpointDef, opts: InfiniteQueryOptions): InfiniteQueryState<unknown> {
       const enabled = opts.enabled ?? true;
       const [pages, setPages] = useState<unknown[][]>([]);
+      const [rawResponses, setRawResponses] = useState<unknown[]>([]);
       const [isPending, setIsPending] = useState(true);
       const [isFetchingMore, setIsFetchingMore] = useState(false);
       const [hasMore, setHasMore] = useState(true);
       const [error, setError] = useState<Error | null>(null);
-      const pageParam = opts.pageParam ?? "page";
+      const [pageNumber, setPageNumber] = useState(1);
+      const [cursor, setCursor] = useState<unknown>(undefined);
+      const pagination = opts.pagination;
 
-      const fetchPage = useCallback(async (pageValue: unknown): Promise<unknown[]> => {
-        const input: FetchInput = {
-          query: { ...opts.query, [pageParam]: String(pageValue) },
-          params: opts.params,
-        };
-        let data = await fetcher.request(endpoint, input);
-        if (endpoint.transform) data = endpoint.transform(data);
-        return data as unknown[];
+      const fetchPage = useCallback(async (pageOrCursor: unknown): Promise<{ items: unknown[]; raw: unknown }> => {
+        const queryParams: Record<string, unknown> = { ...opts.query };
+
+        if (pagination.type === "offset" || pagination.type === "total") {
+          const param = pagination.pageParam ?? "page";
+          queryParams[param] = String(pageOrCursor);
+        } else if (pagination.type === "cursor" && pageOrCursor !== undefined) {
+          queryParams[pagination.cursorParam ?? "cursor"] = String(pageOrCursor);
+        }
+
+        let raw = await fetcher.request(endpoint, { query: queryParams, params: opts.params });
+        if (endpoint.transform) raw = endpoint.transform(raw);
+        const items = Array.isArray(raw) ? raw : (raw as Record<string, unknown>).data ?? raw;
+        return { items: items as unknown[], raw };
       }, [namespace, key, JSON.stringify(opts.query), JSON.stringify(opts.params)]);
 
-      // Initial fetch
+      const resolveHasMore = useCallback((items: unknown[], raw: unknown, currentPage: number): boolean => {
+        if (pagination.type === "offset") return items.length >= pagination.pageSize;
+        if (pagination.type === "cursor") return (raw as Record<string, unknown>)?.[pagination.cursorField] != null;
+        if (pagination.type === "total") {
+          const total = (raw as Record<string, unknown>)?.[pagination.totalField] as number ?? 0;
+          return currentPage < Math.ceil(total / pagination.pageSize);
+        }
+        return false;
+      }, [pagination]);
+
       useEffect(() => {
         if (!enabled) return;
         setIsPending(true);
-        fetchPage(1).then((firstPage) => {
-          setPages([firstPage]);
-          setHasMore(opts.getNextPageParam(firstPage, [firstPage]) !== undefined);
+        const initial = pagination.type === "cursor" ? undefined : 1;
+        fetchPage(initial).then(({ items, raw }) => {
+          setPages([items]);
+          setRawResponses([raw]);
+          setPageNumber(1);
+          if (pagination.type === "cursor") setCursor((raw as Record<string, unknown>)?.[pagination.cursorField]);
+          setHasMore(resolveHasMore(items, raw, 1));
           setIsPending(false);
         }).catch((err) => { setError(err instanceof Error ? err : new Error(String(err))); setIsPending(false); });
       }, [enabled, fetchPage]);
 
       const fetchNext = useCallback(async () => {
         if (!hasMore || isFetchingMore) return;
-        const nextParam = opts.getNextPageParam(pages.at(-1) ?? [], pages);
-        if (nextParam === undefined) { setHasMore(false); return; }
         setIsFetchingMore(true);
         try {
-          const page = await fetchPage(nextParam);
-          const newPages = [...pages, page];
+          const nextPageOrCursor = pagination.type === "cursor" ? cursor : pageNumber + 1;
+          const { items, raw } = await fetchPage(nextPageOrCursor);
+          const newPages = [...pages, items];
+          const nextPage = pageNumber + 1;
           setPages(newPages);
-          setHasMore(opts.getNextPageParam(page, newPages) !== undefined);
+          setRawResponses((prev) => [...prev, raw]);
+          setPageNumber(nextPage);
+          if (pagination.type === "cursor") setCursor((raw as Record<string, unknown>)?.[pagination.cursorField]);
+          setHasMore(resolveHasMore(items, raw, nextPage));
         } catch (err) {
           setError(err instanceof Error ? err : new Error(String(err)));
         }
         setIsFetchingMore(false);
-      }, [pages, hasMore, isFetchingMore, fetchPage]);
+      }, [pages, pageNumber, cursor, hasMore, isFetchingMore, fetchPage, resolveHasMore]);
 
       const data = useMemo(() => {
         const flat = pages.flat();

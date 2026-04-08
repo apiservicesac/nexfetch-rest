@@ -80,13 +80,17 @@ export interface QueryOptions {
   select?: (data: unknown) => unknown;
 }
 
-export interface InfiniteQueryOptions<T = unknown> {
+export type PaginationConfig =
+  | { type: "offset"; pageSize: number; pageParam?: string }
+  | { type: "cursor"; cursorField: string; cursorParam?: string }
+  | { type: "total"; totalField: string; pageSize: number; pageParam?: string };
+
+export interface InfiniteQueryOptions {
   query?: Record<string, unknown>;
   params?: Record<string, string>;
-  getNextPageParam: (lastPage: T[], allPages: T[][]) => unknown | undefined;
-  select?: (pages: T[][]) => unknown;
+  pagination: PaginationConfig;
+  select?: (pages: unknown[][]) => unknown;
   enabled?: boolean;
-  pageParam?: string;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -163,7 +167,7 @@ type NamespaceApi<E extends EndpointMap> = {
 
   useInfiniteQuery: <K extends string & keyof E>(
     key: K,
-    opts: InfiniteQueryOptions<InferResponse<E[K]>>,
+    opts: InfiniteQueryOptions,
   ) => InfiniteQueryState<InferResponse<E[K]>>;
 } & {
   [K in string & keyof E]: (
