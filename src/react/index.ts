@@ -1,4 +1,4 @@
-import type { ClientOptions, NamespacedEndpoints } from "../core/types";
+import type { ApiClientType, ClientOptions, NamespacedEndpoints } from "../core/types";
 import { Fetcher } from "../core/fetcher";
 import { QueryCache } from "../core/cache";
 import { createNamespaceProxy } from "../core/proxy";
@@ -34,5 +34,5 @@ export function createApiClient<T extends NamespacedEndpoints>(options: ClientOp
   const cache = new QueryCache(options.cache);
   const hooks = createReactHooks(fetcher, cache);
 
-  return createNamespaceProxy(options.endpoints, fetcher, hooks);
+  return createNamespaceProxy(options.endpoints, fetcher, hooks) as ApiClientType<T>;
 }

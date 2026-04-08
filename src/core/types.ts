@@ -126,3 +126,31 @@ export interface HookFactory {
     endpoint: E,
   ): MutationHandle<InferBody<E>, InferResponse<E>>;
 }
+
+// ── Inferred Client Type ─────────────────────────────────────────────────────
+
+type EndpointInput<E extends EndpointDef> =
+  (E["body"] extends Schema ? { body: Infer<E["body"]> } : {}) &
+  (E["query"] extends Schema ? { query: Infer<E["query"]> } : {}) &
+  (E["params"] extends Schema ? { params: Infer<E["params"]> } : {});
+
+type NamespaceApi<TEndpoints extends EndpointMap> = {
+  useQuery: <K extends string & keyof TEndpoints>(
+    key: K,
+    ...args: TEndpoints[K]["query"] extends Schema
+      ? [input: Infer<TEndpoints[K]["query"]>, options?: { enabled?: boolean }]
+      : [input?: undefined, options?: { enabled?: boolean }]
+  ) => QueryState<InferResponse<TEndpoints[K]>>;
+
+  useMutation: <K extends string & keyof TEndpoints>(
+    key: K,
+  ) => MutationHandle<InferBody<TEndpoints[K]>, InferResponse<TEndpoints[K]>>;
+} & {
+  [K in string & keyof TEndpoints]: (
+    input?: EndpointInput<TEndpoints[K]>,
+  ) => Promise<InferResponse<TEndpoints[K]>>;
+};
+
+export type ApiClientType<T extends NamespacedEndpoints> = {
+  [NS in string & keyof T]: NamespaceApi<T[NS]>;
+};

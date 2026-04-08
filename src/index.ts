@@ -15,6 +15,7 @@ export type {
   InferResponse,
   QueryEntry,
   HookFactory,
+  ApiClientType,
 } from "./core/types";
 
 export { ApiError } from "./core/types";
