@@ -1,20 +1,14 @@
-import type { CacheConfig, EndpointDef, InferResponse, QueryEntry } from "./types";
-import type { Fetcher } from "./fetcher";
-import { createQueryEntry } from "./query";
+import { atom } from "nanostores";
+import type { CacheConfig, QueryEntry, QueryState } from "./types";
 
-const DEFAULT_CACHE_CONFIG: CacheConfig = {
-  staleTime: 0,
-  gcTime: 5 * 60 * 1000, // 5 minutes
-  refetchOnFocus: false,
-};
+const DEFAULTS: CacheConfig = { staleTime: 0, gcTime: 5 * 60 * 1000, refetchOnFocus: false };
 
 export class QueryCache {
   private entries = new Map<string, QueryEntry>();
   private config: CacheConfig;
 
   constructor(config?: Partial<CacheConfig>) {
-    this.config = { ...DEFAULT_CACHE_CONFIG, ...config };
-
+    this.config = { ...DEFAULTS, ...config };
     if (this.config.refetchOnFocus && typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") this.refetchStale();
@@ -22,37 +16,45 @@ export class QueryCache {
     }
   }
 
-  getOrCreate<E extends EndpointDef>(
-    queryKey: string,
-    fetcher: Fetcher,
-    endpoint: E,
-    input: unknown,
-    staleTime?: number,
-  ): QueryEntry<InferResponse<E>> {
+  getOrCreate<T>(queryKey: string, fetchFn: () => Promise<T>, staleTime?: number): QueryEntry<T> {
     const existing = this.entries.get(queryKey);
     if (existing) {
       this.cancelGc(queryKey);
-      return existing as QueryEntry<InferResponse<E>>;
+      return existing as QueryEntry<T>;
     }
 
-    const entry = createQueryEntry(fetcher, endpoint, queryKey, input, staleTime ?? endpoint.staleTime ?? this.config.staleTime);
+    const $state = atom<QueryState<T>>({ data: null, isPending: true, error: null, isFetching: true });
+
+    const doFetch = async () => {
+      const current = $state.get();
+      $state.set({ ...current, isFetching: true, error: null, isPending: current.data === null });
+      try {
+        const data = await fetchFn();
+        $state.set({ data, isPending: false, error: null, isFetching: false });
+        entry.fetchedAt = Date.now();
+      } catch (error) {
+        $state.set({ ...current, isPending: false, isFetching: false, error: error instanceof Error ? error : new Error(String(error)) });
+      }
+    };
+
+    const entry: QueryEntry<T> = { $state, queryKey, fetchedAt: 0, subscribers: 0, staleTime: staleTime ?? this.config.staleTime, fetch: doFetch, gcTimer: null };
     this.entries.set(queryKey, entry);
+    doFetch();
     return entry;
   }
 
   ensureFresh(queryKey: string): void {
     const entry = this.entries.get(queryKey);
-    if (!entry) return;
-    if (entry.fetchedAt === 0) return; // Still loading initial fetch
-    if (Date.now() - entry.fetchedAt < entry.staleTime) return; // Still fresh
+    if (!entry || entry.fetchedAt === 0) return;
+    if (Date.now() - entry.fetchedAt < entry.staleTime) return;
     entry.fetch();
   }
 
-  invalidate(keyOrPrefix: string): void {
+  invalidate(prefix: string): void {
     for (const [key, entry] of this.entries) {
-      if (key === keyOrPrefix || key.startsWith(`${keyOrPrefix}.`) || key.startsWith(`${keyOrPrefix}:`)) {
-        entry.fetchedAt = 0; // Mark as stale
-        if (entry.subscribers > 0) entry.fetch(); // Refetch if anyone is listening
+      if (key === prefix || key.startsWith(`${prefix}.`) || key.startsWith(`${prefix}:`)) {
+        entry.fetchedAt = 0;
+        if (entry.subscribers > 0) entry.fetch();
       }
     }
   }
@@ -60,16 +62,11 @@ export class QueryCache {
   subscribe(queryKey: string): () => void {
     const entry = this.entries.get(queryKey);
     if (!entry) return () => {};
-
     entry.subscribers++;
     this.cancelGc(queryKey);
-
     return () => {
       entry.subscribers--;
-      if (entry.subscribers <= 0) {
-        entry.subscribers = 0;
-        this.scheduleGc(queryKey);
-      }
+      if (entry.subscribers <= 0) { entry.subscribers = 0; this.scheduleGc(queryKey); }
     };
   }
 
@@ -84,16 +81,11 @@ export class QueryCache {
   private scheduleGc(queryKey: string): void {
     const entry = this.entries.get(queryKey);
     if (!entry) return;
-    entry.gcTimer = setTimeout(() => {
-      if (entry.subscribers <= 0) this.entries.delete(queryKey);
-    }, this.config.gcTime);
+    entry.gcTimer = setTimeout(() => { if (entry.subscribers <= 0) this.entries.delete(queryKey); }, this.config.gcTime);
   }
 
   private cancelGc(queryKey: string): void {
     const entry = this.entries.get(queryKey);
-    if (entry?.gcTimer) {
-      clearTimeout(entry.gcTimer);
-      entry.gcTimer = null;
-    }
+    if (entry?.gcTimer) { clearTimeout(entry.gcTimer); entry.gcTimer = null; }
   }
 }

@@ -1,12 +1,11 @@
-import type { ClientOptions, HookFactory, NamespacedEndpoints } from "./types";
+import type { ApiClient, ClientOptions, EndpointDef, FetchInput, HookFactory, NamespacedEndpoints } from "./types";
 import { Fetcher } from "./fetcher";
 import { QueryCache } from "./cache";
-import { createNamespaceProxy } from "./proxy";
 
-export function createCoreClient<T extends NamespacedEndpoints>(
+export function createClient<T extends NamespacedEndpoints>(
   options: ClientOptions<T>,
   hooks: HookFactory,
-) {
+): ApiClient<T> {
   const fetcher = new Fetcher({
     baseURL: options.baseURL,
     credentials: options.credentials,
@@ -14,11 +13,39 @@ export function createCoreClient<T extends NamespacedEndpoints>(
     retry: options.retry,
     onError: options.onError,
   });
-
   const cache = new QueryCache(options.cache);
 
-  return { proxy: createNamespaceProxy(options.endpoints, fetcher, hooks), fetcher, cache };
+  return new Proxy({} as Record<string, unknown>, {
+    get(_, namespace: string) {
+      const nsEndpoints = options.endpoints[namespace];
+      if (!nsEndpoints) return undefined;
+
+      return new Proxy({} as Record<string, unknown>, {
+        get(_, method: string) {
+          if (method === "useQuery") {
+            return (key: string, input?: FetchInput, opts?: { enabled?: boolean }) => {
+              const endpoint = nsEndpoints[key] as EndpointDef;
+              if (!endpoint) throw new Error(`Endpoint "${namespace}.${key}" not found`);
+              return hooks.useQuery(namespace, key, endpoint, input, opts);
+            };
+          }
+          if (method === "useMutation") {
+            return (key: string) => {
+              const endpoint = nsEndpoints[key] as EndpointDef;
+              if (!endpoint) throw new Error(`Endpoint "${namespace}.${key}" not found`);
+              return hooks.useMutation(namespace, key, endpoint);
+            };
+          }
+          const endpoint = nsEndpoints[method] as EndpointDef | undefined;
+          if (endpoint) {
+            return (input?: FetchInput) => fetcher.request(endpoint, input);
+          }
+          return undefined;
+        },
+      });
+    },
+  }) as ApiClient<T>;
 }
 
-export { QueryCache } from "./cache";
 export { Fetcher } from "./fetcher";
+export { QueryCache } from "./cache";
