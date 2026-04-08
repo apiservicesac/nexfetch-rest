@@ -1,0 +1,58 @@
+{
+  "name": "@nexfetch/rest",
+  "version": "0.1.0",
+  "description": "Framework-agnostic REST API client with cache, retry, dedup, and optional schema validation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./vue": {
+      "types": "./dist/vue/index.d.ts",
+      "import": "./dist/vue/index.js"
+    },
+    "./vanilla": {
+      "types": "./dist/vanilla/index.d.ts",
+      "import": "./dist/vanilla/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "keywords": ["api-client", "rest", "fetch", "cache", "nanostores", "react", "vue", "framework-agnostic", "retry", "dedup"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apiservicesac/nexfetch-rest.git"
+  },
+  "dependencies": {
+    "nanostores": "^0.11.3"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  }
+}
