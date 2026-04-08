@@ -1,42 +1,49 @@
 # @nexfetch/rest
 
-Framework-agnostic REST API client with built-in cache, retry, deduplication, and optional schema validation.
+Framework-agnostic REST API client with built-in cache, retry, deduplication, tag-based invalidation, and optional schema validation.
 
-Works with **React**, **Vue**, **Solid**, or **vanilla JS**.
+Works with **React**, **Vue**, or **vanilla JS**. Zero dependency on any validation library.
 
 ## Install
 
 ```bash
 npm install @nexfetch/rest
-# or
-bun add @nexfetch/rest
 ```
 
 ## Quick Start
 
-### 1. Define your endpoints
+### 1. Define endpoints
 
 ```typescript
 import { defineEndpoints } from "@nexfetch/rest";
+import { z } from "zod"; // optional — any validator with .parse() works
 
 const projectEndpoints = defineEndpoints({
   list: {
     path: "/api/projects",
     method: "GET",
-    query: z.object({ orgId: z.string() }), // optional — works with Zod, Valibot, or any .parse()
+    query: z.object({ orgId: z.string() }),
     response: z.array(projectSchema),
+    tags: ["projects"],
+  },
+  get: {
+    path: "/api/projects/:id",
+    method: "GET",
+    params: z.object({ id: z.string() }),
+    tags: ["projects"],
   },
   create: {
     path: "/api/projects",
     method: "POST",
-    body: z.object({ name: z.string(), description: z.string().optional() }),
+    body: z.object({ name: z.string() }),
     response: projectSchema,
-    invalidate: ["projects.list"], // auto-invalidate after mutation
+    invalidates: ["projects"],
   },
   delete: {
     path: "/api/projects/:id",
     method: "DELETE",
     params: z.object({ id: z.string() }),
+    invalidates: ["projects"],
   },
 });
 ```
@@ -61,18 +68,10 @@ export const api = createApiClient({
 
 ```tsx
 function ProjectList() {
-  const { data, isPending, error, isFetching } = api.projects.useQuery("list", { orgId: "abc" });
+  const { data, isPending } = api.projects.useQuery("list", { query: { orgId: "abc" } });
 
   if (isPending) return <p>Loading...</p>;
-  if (error) return <p>Error: {error.message}</p>;
-
-  return (
-    <ul>
-      {data.map((project) => (
-        <li key={project.id}>{project.name}</li>
-      ))}
-    </ul>
-  );
+  return <ul>{data?.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
 }
 
 function CreateProject() {
@@ -81,7 +80,10 @@ function CreateProject() {
   return (
     <button
       disabled={create.isPending}
-      onClick={() => create.mutate({ name: "New project" })}
+      onClick={() => create.mutate(
+        { body: { name: "New project" } },
+        { onSuccess: (data) => console.log("Created:", data.id) },
+      )}
     >
       {create.isPending ? "Creating..." : "Create"}
     </button>
@@ -91,135 +93,160 @@ function CreateProject() {
 
 ## Features
 
-### Cache
+### Unified Input Format
 
-Queries are cached by a unique key generated from namespace + endpoint + input. Two components calling the same query share the same cache entry.
+All hooks use the same `{ body?, query?, params? }` format:
 
 ```typescript
-// Both components share the same cache entry and fetch only once
-api.projects.useQuery("list", { orgId: "abc" });
-api.projects.useQuery("list", { orgId: "abc" }); // cache hit — no extra fetch
+// GET with query params
+api.projects.useQuery("list", { query: { orgId: "abc" } });
+
+// GET with path params
+api.projects.useQuery("get", { params: { id: "123" } });
+
+// POST with body
+create.mutate({ body: { name: "New" } });
+
+// DELETE with path params
+del.mutate({ params: { id: "123" } });
+
+// PUT with body + path params
+update.mutate({ params: { id: "123" }, body: { name: "Updated" } });
 ```
+
+### Cache & Deduplication
+
+Queries are cached by key (namespace + endpoint + input). Two components with the same query share one cache entry and one network request.
 
 ### Stale-While-Revalidate
 
-When data becomes stale, the old data stays visible while a background refetch happens.
+Old data stays visible while background refetch happens. Configure globally or per-endpoint:
 
 ```typescript
-const api = createApiClient({
-  cache: { staleTime: 30_000 }, // data is fresh for 30 seconds
-  endpoints: { ... },
-});
+// Global
+createApiClient({ cache: { staleTime: 30_000 }, ... });
 
-// Per-endpoint override:
-const endpoints = defineEndpoints({
-  list: { path: "/api/items", method: "GET", staleTime: 60_000 },
-});
+// Per-endpoint
+defineEndpoints({ list: { ..., staleTime: 60_000 } });
 ```
 
-### Automatic Invalidation
+### Tag-Based Invalidation
 
-Mutations auto-invalidate related queries:
+Queries declare `tags`. Mutations declare `invalidates`. After a mutation succeeds, all queries with matching tags are refetched.
 
 ```typescript
-const endpoints = defineEndpoints({
-  list: { path: "/api/items", method: "GET" },
-  create: {
-    path: "/api/items",
-    method: "POST",
-    invalidate: ["items.list"], // refetches all "items.list" queries after mutation
+defineEndpoints({
+  members: { method: "GET", path: "/api/members", tags: ["members"] },
+  addMember: { method: "POST", path: "/api/members", invalidates: ["members"] },
+});
+// After addMember.mutate() succeeds → all "members" queries refetch automatically
+```
+
+### Mutation Callbacks
+
+```typescript
+const create = api.projects.useMutation("create");
+
+await create.mutate(
+  { body: { name: "New" } },
+  {
+    onSuccess: (data) => navigate(`/projects/${data.id}`),
+    onError: (err) => toast.error(err.message),
+  },
+);
+```
+
+### Polling (refetchInterval)
+
+```typescript
+api.activities.useQuery("list", { params: { id } }, { refetchInterval: 10_000 });
+```
+
+### Response Transform
+
+Normalize backend responses at the endpoint level. Runs before the data reaches the cache:
+
+```typescript
+defineEndpoints({
+  list: {
+    path: "/api/notifications",
+    method: "GET",
+    transform: (raw) => (raw as { data: Notification[] }).data, // unwrap .data
   },
 });
 ```
 
-If no `invalidate` is specified, mutations invalidate all queries in the same namespace by default.
+### Select (UI Transform)
+
+Transform cached data per-component without affecting the cache:
+
+```typescript
+const { data } = api.notifications.useQuery("list", undefined, {
+  select: (data) => (data as Notification[]).filter((n) => !n.read),
+});
+```
+
+### Infinite Query (Pagination)
+
+Composable hook for scroll-based pagination:
+
+```typescript
+const repos = api.git.useInfiniteQuery("repos", {
+  query: { provider: "github" },
+  getNextPageParam: (lastPage, allPages) =>
+    lastPage.length === 100 ? allPages.length + 1 : undefined,
+});
+
+// repos.data       — flat array of all pages
+// repos.pages      — array of page arrays
+// repos.fetchNext() — load next page
+// repos.hasMore     — boolean
+// repos.isFetchingMore — boolean
+// repos.isPending   — true during first page load
+```
 
 ### Retry
 
-Failed requests are retried automatically with exponential backoff.
+Failed requests retry with exponential backoff:
 
 ```typescript
-const api = createApiClient({
-  retry: {
-    retries: 3,            // max retry attempts (default: 2)
-    retryDelay: 1000,      // base delay in ms (default: 1000)
-    retryOn: [408, 500, 502, 503, 504], // HTTP status codes to retry
-  },
-  endpoints: { ... },
+createApiClient({
+  retry: { retries: 3, retryDelay: 1000, retryOn: [408, 500, 502, 503, 504] },
+  ...
 });
 ```
-
-### Request Deduplication
-
-Concurrent identical GET requests are deduplicated — only one network request is made.
 
 ### Garbage Collection
 
-Cache entries without active subscribers are automatically cleaned up after `gcTime` (default: 5 minutes).
-
-```typescript
-const api = createApiClient({
-  cache: { gcTime: 10 * 60 * 1000 }, // 10 minutes
-  endpoints: { ... },
-});
-```
+Unused cache entries are removed after `gcTime` (default: 5 minutes). Entries are "unused" when no component subscribes to them.
 
 ### Refetch on Focus
 
-Optionally refetch stale queries when the browser tab regains focus.
+Optionally refetch stale queries when the browser tab regains focus:
 
 ```typescript
-const api = createApiClient({
-  cache: { refetchOnFocus: true },
-  endpoints: { ... },
-});
+createApiClient({ cache: { refetchOnFocus: true }, ... });
 ```
 
-## Schema Validation (Optional)
+### Direct Fetch
 
-Schemas are optional and validator-agnostic. Any object with a `.parse()` method works:
-
-```typescript
-// With Zod
-import { z } from "zod";
-defineEndpoints({
-  list: { path: "/api/items", method: "GET", response: z.array(itemSchema) },
-});
-
-// With Valibot
-import * as v from "valibot";
-defineEndpoints({
-  list: { path: "/api/items", method: "GET", response: v.parser(v.array(itemSchema)) },
-});
-
-// Without validation
-defineEndpoints({
-  list: { path: "/api/items", method: "GET" }, // response type is `unknown`
-});
-```
-
-## Direct Fetch (No Hooks)
-
-Call endpoints directly without hooks — returns a plain Promise:
+Call endpoints without hooks — returns a plain Promise:
 
 ```typescript
 const projects = await api.projects.list({ query: { orgId: "abc" } });
-const created = await api.projects.create({ body: { name: "New" } });
 await api.projects.delete({ params: { id: "123" } });
 ```
 
-## Path Parameters
+## Schema Validation
 
-Use `:param` in paths — they're interpolated from `params`:
+Schemas are optional. Any object with `.parse()` works — Zod, Valibot, Arktype, or custom:
 
 ```typescript
-defineEndpoints({
-  detail: { path: "/api/projects/:id", method: "GET", params: z.object({ id: z.string() }) },
-  update: { path: "/api/projects/:id", method: "PUT", params: z.object({ id: z.string() }), body: updateSchema },
-});
+// With Zod
+response: z.array(itemSchema)
 
-// Usage:
-api.projects.detail({ params: { id: "123" } });
+// Without validation (response is `unknown`)
+{ path: "/api/items", method: "GET" }
 ```
 
 ## Framework Adapters
@@ -230,13 +257,7 @@ api.projects.detail({ params: { id: "123" } });
 import { createApiClient } from "@nexfetch/rest/react";
 ```
 
-Uses `useSyncExternalStore` under the hood. Works with React 18+.
-
-### Vue (coming soon)
-
-```typescript
-import { createApiClient } from "@nexfetch/rest/vue";
-```
+Uses `useSyncExternalStore`. Requires React 18+.
 
 ### Vanilla JS
 
@@ -244,43 +265,40 @@ import { createApiClient } from "@nexfetch/rest/vue";
 import { createApiClient } from "@nexfetch/rest/vanilla";
 
 const api = createApiClient({ ... });
-const entry = api.projects.query("list", { orgId: "abc" });
+const entry = api.projects.query("list", { query: { orgId: "abc" } });
+entry.$state.subscribe((state) => console.log(state.data));
 
-// Subscribe to state changes
-entry.$state.subscribe((state) => {
-  console.log(state.data, state.isPending, state.error);
-});
-
-// Mutations
 const mutation = api.projects.mutation("create");
-await mutation.mutate({ name: "New" });
-
-// Direct fetch
-await api.projects.fetch("list", { query: { orgId: "abc" } });
-
-// Invalidate
-api.projects.invalidate("list");
+await mutation.mutate({ body: { name: "New" } });
 ```
+
+### Vue
+
+```typescript
+import { createApiClient } from "@nexfetch/rest/vue";
+```
+
+Currently uses the vanilla adapter. Native Vue composables coming soon.
 
 ## API Reference
 
-### `defineEndpoints(endpoints)`
-
-Define a set of typed endpoints. Each endpoint can have:
+### Endpoint Definition
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `path` | `string` | URL path (supports `:param` interpolation) |
+| `path` | `string` | URL path with `:param` interpolation |
 | `method` | `"GET" \| "POST" \| "PUT" \| "DELETE" \| "PATCH"` | HTTP method |
 | `body` | `Schema` | Request body schema (optional) |
-| `query` | `Schema` | Query parameters schema (optional) |
-| `params` | `Schema` | Path parameters schema (optional) |
+| `query` | `Schema` | Query params schema (optional) |
+| `params` | `Schema` | Path params schema (optional) |
 | `response` | `Schema` | Response validation schema (optional) |
 | `headers` | `Record<string, string>` | Extra headers (optional) |
-| `staleTime` | `number` | Override cache stale time in ms (optional) |
-| `invalidate` | `string[]` | Cache keys to invalidate on mutation (optional) |
+| `staleTime` | `number` | Cache stale time in ms (optional) |
+| `tags` | `string[]` | Cache tags for invalidation (optional) |
+| `invalidates` | `string[]` | Tags to invalidate on mutation success (optional) |
+| `transform` | `(raw: unknown) => unknown` | Normalize response before caching (optional) |
 
-### `createApiClient(options)`
+### Client Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -289,12 +307,20 @@ Define a set of typed endpoints. Each endpoint can have:
 | `headers` | `Record<string, string>` | — | Global headers |
 | `endpoints` | `NamespacedEndpoints` | — | Endpoint definitions by namespace |
 | `cache.staleTime` | `number` | `0` | Default stale time (ms) |
-| `cache.gcTime` | `number` | `300000` | GC timeout for unused entries (ms) |
-| `cache.refetchOnFocus` | `boolean` | `false` | Refetch stale on window focus |
+| `cache.gcTime` | `number` | `300000` | GC time for unused entries (ms) |
+| `cache.refetchOnFocus` | `boolean` | `false` | Refetch stale on tab focus |
 | `retry.retries` | `number` | `2` | Max retry attempts |
 | `retry.retryDelay` | `number` | `1000` | Base retry delay (ms) |
 | `retry.retryOn` | `number[]` | `[408,500,502,503,504]` | Status codes to retry |
 | `onError` | `(error: ApiError) => void` | — | Global error handler |
+
+### Query Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `enabled` | `boolean` | Enable/disable the query (default: `true`) |
+| `refetchInterval` | `number` | Polling interval in ms (optional) |
+| `select` | `(data: unknown) => unknown` | Transform data per-component (optional) |
 
 ## License
 
