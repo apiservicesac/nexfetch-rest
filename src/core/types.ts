@@ -74,10 +74,10 @@ export interface InfiniteQueryState<T> {
 
 // ── Options ──────────────────────────────────────────────────────────────────
 
-export interface QueryOptions {
+export interface QueryOptions<TData = unknown, TSelected = TData> {
   enabled?: boolean;
   refetchInterval?: number;
-  select?: (data: unknown) => unknown;
+  select?: (data: TData) => TSelected;
 }
 
 export type PaginationConfig =
@@ -85,11 +85,11 @@ export type PaginationConfig =
   | { type: "cursor"; cursorField: string; cursorParam?: string }
   | { type: "total"; totalField: string; pageSize: number; pageParam?: string };
 
-export interface InfiniteQueryOptions {
+export interface InfiniteQueryOptions<TData = unknown, TSelected = TData[]> {
   query?: Record<string, unknown>;
   params?: Record<string, string>;
   pagination: PaginationConfig;
-  select?: (pages: unknown[][]) => unknown;
+  select?: (pages: TData[][]) => TSelected;
   enabled?: boolean;
 }
 
@@ -154,20 +154,20 @@ export interface FetchInput {
 // ── Client type ──────────────────────────────────────────────────────────────
 
 type NamespaceApi<E extends EndpointMap> = {
-  useQuery: <K extends string & keyof E>(
+  useQuery: <K extends string & keyof E, TSelected = InferResponse<E[K]>>(
     key: K,
     ...args: ResolvedInput<E[K]> extends void
-      ? [input?: void, opts?: QueryOptions]
-      : [input: ResolvedInput<E[K]>, opts?: QueryOptions]
-  ) => QueryState<InferResponse<E[K]>>;
+      ? [input?: void, opts?: QueryOptions<InferResponse<E[K]>, TSelected>]
+      : [input: ResolvedInput<E[K]>, opts?: QueryOptions<InferResponse<E[K]>, TSelected>]
+  ) => QueryState<TSelected>;
 
   useMutation: <K extends string & keyof E>(
     key: K,
   ) => MutationHandle<ResolvedInput<E[K]>, InferResponse<E[K]>>;
 
-  useInfiniteQuery: <K extends string & keyof E>(
+  useInfiniteQuery: <K extends string & keyof E, TSelected = InferResponse<E[K]>[]>(
     key: K,
-    opts: InfiniteQueryOptions,
+    opts: InfiniteQueryOptions<InferResponse<E[K]>, TSelected>,
   ) => InfiniteQueryState<InferResponse<E[K]>>;
 } & {
   [K in string & keyof E]: (
@@ -182,7 +182,7 @@ export type ApiClient<T extends NamespacedEndpoints> = {
 // ── Hook factory ─────────────────────────────────────────────────────────────
 
 export interface HookFactory {
-  useQuery(namespace: string, key: string, endpoint: EndpointDef, input: FetchInput | undefined, opts?: QueryOptions): QueryState<unknown>;
+  useQuery(namespace: string, key: string, endpoint: EndpointDef, input: FetchInput | undefined, opts?: QueryOptions<unknown, unknown>): QueryState<unknown>;
   useMutation(namespace: string, key: string, endpoint: EndpointDef): MutationHandle<unknown, unknown>;
-  useInfiniteQuery(namespace: string, key: string, endpoint: EndpointDef, opts: InfiniteQueryOptions): InfiniteQueryState<unknown>;
+  useInfiniteQuery(namespace: string, key: string, endpoint: EndpointDef, opts: InfiniteQueryOptions<unknown, unknown>): InfiniteQueryState<unknown>;
 }
