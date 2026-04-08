@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ReadableAtom } from "nanostores";
-import type { EndpointDef, HookFactory, InferBody, InferResponse, MutationHandle, QueryState } from "../core/types";
+import type { EndpointDef, HookFactory, InferMutationInput, InferResponse, MutationHandle, QueryState } from "../core/types";
 import type { QueryCache } from "../core/cache";
 import type { Fetcher } from "../core/fetcher";
 import { createMutation } from "../core/mutation";
@@ -58,7 +58,7 @@ export function createReactHooks(fetcher: Fetcher, cache: QueryCache): HookFacto
       namespace: string,
       endpointKey: string,
       endpoint: E,
-    ): MutationHandle<InferBody<E>, InferResponse<E>> {
+    ): MutationHandle<InferMutationInput<E>, InferResponse<E>> {
       return useMemo(
         () => createMutation(fetcher, cache, endpoint, namespace, endpointKey),
         [namespace, endpointKey],

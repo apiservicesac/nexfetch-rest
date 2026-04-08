@@ -1,5 +1,5 @@
 import { atom } from "nanostores";
-import type { EndpointDef, InferBody, InferResponse, MutationHandle, MutationState } from "./types";
+import type { EndpointDef, InferMutationInput, InferResponse, MutationHandle, MutationState } from "./types";
 import type { Fetcher } from "./fetcher";
 import type { QueryCache } from "./cache";
 
@@ -8,9 +8,9 @@ export function createMutation<E extends EndpointDef>(
   cache: QueryCache,
   endpoint: E,
   namespace: string,
-  endpointKey: string,
-): MutationHandle<InferBody<E>, InferResponse<E>> {
-  type TInput = InferBody<E>;
+  _endpointKey: string,
+): MutationHandle<InferMutationInput<E>, InferResponse<E>> {
+  type TInput = InferMutationInput<E>;
   type TOutput = InferResponse<E>;
 
   const $state = atom<MutationState<TOutput>>({
@@ -22,16 +22,18 @@ export function createMutation<E extends EndpointDef>(
   const mutate = async (input: TInput): Promise<TOutput> => {
     $state.set({ data: null, isPending: true, error: null });
     try {
-      const data = await fetcher.request<TOutput>(endpoint, { body: input });
+      // Extract body, params, query from the combined input
+      const parts = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+      const data = await fetcher.request<TOutput>(endpoint, {
+        body: parts.body,
+        query: parts.query,
+        params: parts.params as Record<string, string> | undefined,
+      });
       $state.set({ data, isPending: false, error: null });
 
-      // Auto-invalidate related queries
       if (endpoint.invalidate) {
-        for (const key of endpoint.invalidate) {
-          cache.invalidate(key);
-        }
+        for (const key of endpoint.invalidate) cache.invalidate(key);
       } else {
-        // Default: invalidate all queries in the same namespace
         cache.invalidate(namespace);
       }
 

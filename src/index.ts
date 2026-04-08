@@ -13,6 +13,7 @@ export type {
   InferQuery,
   InferParams,
   InferResponse,
+  InferMutationInput,
   QueryEntry,
   HookFactory,
   ApiClientType,

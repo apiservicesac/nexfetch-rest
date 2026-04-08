@@ -39,6 +39,19 @@ export type InferQuery<E extends EndpointDef> = E["query"] extends Schema ? Infe
 export type InferParams<E extends EndpointDef> = E["params"] extends Schema ? Infer<E["params"]> : never;
 export type InferResponse<E extends EndpointDef> = E["response"] extends Schema ? Infer<E["response"]> : unknown;
 
+// Mutation input: combines body + params + query into a single object
+type MutationInputParts<E extends EndpointDef> =
+  (E["body"] extends Schema ? { body: Infer<E["body"]> } : {}) &
+  (E["params"] extends Schema ? { params: Infer<E["params"]> } : {}) &
+  (E["query"] extends Schema ? { query: Infer<E["query"]> } : {});
+
+// If the endpoint has no body, no params, and no query, input is void (no argument needed)
+export type InferMutationInput<E extends EndpointDef> =
+  E["body"] extends Schema ? MutationInputParts<E>
+  : E["params"] extends Schema ? MutationInputParts<E>
+  : E["query"] extends Schema ? MutationInputParts<E>
+  : void;
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 export interface QueryState<T> {
@@ -124,7 +137,7 @@ export interface HookFactory {
     namespace: string,
     endpointKey: string,
     endpoint: E,
-  ): MutationHandle<InferBody<E>, InferResponse<E>>;
+  ): MutationHandle<InferMutationInput<E>, InferResponse<E>>;
 }
 
 // ── Inferred Client Type ─────────────────────────────────────────────────────
@@ -144,7 +157,7 @@ type NamespaceApi<TEndpoints extends EndpointMap> = {
 
   useMutation: <K extends string & keyof TEndpoints>(
     key: K,
-  ) => MutationHandle<InferBody<TEndpoints[K]>, InferResponse<TEndpoints[K]>>;
+  ) => MutationHandle<InferMutationInput<TEndpoints[K]>, InferResponse<TEndpoints[K]>>;
 } & {
   [K in string & keyof TEndpoints]: (
     input?: EndpointInput<TEndpoints[K]>,
