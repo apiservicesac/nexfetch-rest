@@ -14,5 +14,5 @@ export function createApiClient<T extends NamespacedEndpoints>(options: ClientOp
   });
   const cache = new QueryCache(options.cache);
   const hooks = createReactHooks(fetcher, cache);
-  return createClient(options, hooks);
+  return createClient(options, hooks, { fetcher, cache });
 }
