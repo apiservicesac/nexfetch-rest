@@ -20,6 +20,24 @@ export class Fetcher {
   }
 
   async request<T = unknown>(endpoint: EndpointDef, input?: FetchInput): Promise<T> {
+    // ── Runtime validation ──────────────────────────────────────
+    const hasPathParams = endpoint.path.includes(":");
+    if (hasPathParams && !input?.params) {
+      const missing = endpoint.path.match(/:(\w+)/g);
+      throw new Error(`Missing path params: ${missing!.join(", ")} in "${endpoint.path}". Pass them as { params: { ... } }`);
+    }
+    if (input) {
+      if (endpoint.params && input.params) {
+        input = { ...input, params: endpoint.params.parse(input.params) as Record<string, string> };
+      }
+      if (endpoint.query && input.query) {
+        input = { ...input, query: endpoint.query.parse(input.query) };
+      }
+      if (endpoint.body && input.body) {
+        input = { ...input, body: endpoint.body.parse(input.body) };
+      }
+    }
+
     const url = this.buildUrl(endpoint.path, input?.query, input?.params);
     const init: RequestInit = {
       method: endpoint.method,
@@ -75,6 +93,10 @@ export class Fetcher {
       for (const [key, value] of Object.entries(params)) {
         resolved = resolved.replace(`:${key}`, encodeURIComponent(value));
       }
+    }
+    const missing = resolved.match(/:(\w+)/g);
+    if (missing) {
+      throw new Error(`Missing path params: ${missing.join(", ")} in "${path}"`);
     }
     const url = new URL(resolved, this.options.baseURL);
     if (query && typeof query === "object") {
