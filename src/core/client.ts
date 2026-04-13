@@ -1,127 +1,50 @@
-import { atom } from "nanostores";
-import type {
-  ApiClient, ClientOptions, EndpointDef, FetchInput,
-  HookFactory, InfiniteQueryOptions, MutationHandle,
-  NamespacedEndpoints, QueryOptions,
-} from "./types";
-import { Fetcher } from "./fetcher";
+import type { ClientOptions, InfiniteQueryOptions, MutationOptions, NamespacedEndpoints } from "./types";
+import { HttpClient } from "./http-client";
+import { RequestPipeline } from "./request-pipeline";
 import { QueryCache } from "./cache";
-import { buildQueryKey, getEndpoint, INITIAL_MUTATION_STATE, type MutationState, toError } from "./utils";
+import { buildEndpointTree, type EndpointTree, type EndpointNode } from "./endpoint";
+import { createQuery, type Query } from "./query";
+import { createMutation, type Mutation } from "./mutation";
+import { createInfiniteQuery, type InfiniteQuery } from "./infinite-query";
 
-const NO_HOOKS_MSG = 'React hooks are not available. Use createApiClient from "nexfetch-rest/react".';
+export interface Client<T extends NamespacedEndpoints> {
+  readonly endpoints: EndpointTree<T>;
+  readonly cache: QueryCache;
+  readonly pipeline: RequestPipeline;
+  query<I, O>(endpoint: EndpointNode<I, O>, input: I): Query<I, O>;
+  mutation<I, O>(endpoint: EndpointNode<I, O>, opts?: MutationOptions<I, O>): Mutation<I, O>;
+  infiniteQuery<I, O>(endpoint: EndpointNode<I, O>, opts: InfiniteQueryOptions<I>): InfiniteQuery<I, O>;
+}
 
-export function createRuntime<T extends NamespacedEndpoints>(
-  options: ClientOptions<T>,
-): { fetcher: Fetcher; cache: QueryCache } {
-  const fetcher = new Fetcher({
+/**
+ * The vanilla client. Endpoints live at `client.endpoints.<namespace>.<name>`
+ * and operations (query, mutation, infiniteQuery) live on the root client.
+ * This eliminates namespace collisions — an endpoint named "query" or "fetch"
+ * is just an EndpointNode like any other.
+ */
+export type VanillaClient<T extends NamespacedEndpoints> = Client<T> & EndpointTree<T>;
+
+export function createClient<T extends NamespacedEndpoints>(options: ClientOptions<T>): VanillaClient<T> {
+  const http = new HttpClient({
     baseURL: options.baseURL,
     credentials: options.credentials,
     headers: options.headers,
-    retry: options.retry,
     onError: options.onError,
   });
+  const pipeline = new RequestPipeline(http, { retry: options.retry });
   const cache = new QueryCache(options.cache);
-  return { fetcher, cache };
-}
+  const endpoints = buildEndpointTree(options.endpoints, pipeline);
 
-export function createClient<T extends NamespacedEndpoints>(
-  options: ClientOptions<T>,
-  hooks?: HookFactory,
-  runtime?: { fetcher: Fetcher; cache: QueryCache },
-): ApiClient<T> {
-  const { fetcher, cache } = runtime ?? createRuntime(options);
+  const client: Client<T> = {
+    endpoints,
+    cache,
+    pipeline,
+    query: (endpoint, input) => createQuery(endpoint, input, cache, pipeline),
+    mutation: (endpoint, opts) => createMutation(endpoint, cache, opts),
+    infiniteQuery: (endpoint, opts) => createInfiniteQuery(endpoint, cache, opts),
+  };
 
-  return new Proxy({} as Record<string, unknown>, {
-    get(_, namespace: string) {
-      const nsEndpoints = options.endpoints[namespace];
-      if (!nsEndpoints) return undefined;
-
-      return new Proxy({} as Record<string, unknown>, {
-        get(_, method: string) {
-          // ── React hooks ───────────────────────────────────────────
-          if (method === "useQuery") {
-            return (key: string, input?: FetchInput, opts?: QueryOptions) => {
-              if (!hooks) throw new Error(NO_HOOKS_MSG);
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              return hooks.useQuery(namespace, key, endpoint, input, opts);
-            };
-          }
-
-          if (method === "useMutation") {
-            return (key: string) => {
-              if (!hooks) throw new Error(NO_HOOKS_MSG);
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              return hooks.useMutation(namespace, key, endpoint);
-            };
-          }
-
-          if (method === "useInfiniteQuery") {
-            return (key: string, opts: InfiniteQueryOptions) => {
-              if (!hooks) throw new Error(NO_HOOKS_MSG);
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              return hooks.useInfiniteQuery(namespace, key, endpoint, opts);
-            };
-          }
-
-          // ── Vanilla operations ────────────────────────────────────
-          if (method === "query") {
-            return (key: string, input?: FetchInput) => {
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              const queryKey = buildQueryKey(namespace, key, input);
-              return cache.getOrCreate(queryKey, () => fetcher.request(endpoint, input), {
-                staleTime: endpoint.staleTime,
-                tags: endpoint.tags,
-                transform: endpoint.transform,
-              });
-            };
-          }
-
-          if (method === "mutation") {
-            return (key: string): MutationHandle<unknown, unknown> => {
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              const $state = atom<MutationState>({ ...INITIAL_MUTATION_STATE });
-
-              return {
-                get data() { return $state.get().data; },
-                get isPending() { return $state.get().isPending; },
-                get error() { return $state.get().error; },
-                mutate: async (input: unknown, opts?) => {
-                  $state.set({ ...INITIAL_MUTATION_STATE, isPending: true });
-                  try {
-                    const data = await fetcher.request(endpoint, input as FetchInput);
-                    $state.set({ data, isPending: false, error: null });
-                    for (const tag of endpoint.invalidates ?? []) cache.invalidateByTag(tag);
-                    opts?.onSuccess?.(data);
-                    return data;
-                  } catch (error) {
-                    const err = toError(error);
-                    $state.set({ data: null, isPending: false, error: err });
-                    opts?.onError?.(err);
-                    throw err;
-                  }
-                },
-                reset: () => $state.set({ ...INITIAL_MUTATION_STATE }),
-              };
-            };
-          }
-
-          if (method === "fetch") {
-            return (key: string, input?: FetchInput) => {
-              const endpoint = getEndpoint(nsEndpoints, namespace, key);
-              return fetcher.request(endpoint, input);
-            };
-          }
-
-          if (method === "invalidateByTag") {
-            return (tag: string) => cache.invalidateByTag(tag);
-          }
-
-          // ── Direct endpoint call (e.g. api.users.getById(input)) ─
-          const endpoint = nsEndpoints[method] as EndpointDef | undefined;
-          if (endpoint) return (input?: FetchInput) => fetcher.request(endpoint, input);
-          return undefined;
-        },
-      });
-    },
-  }) as ApiClient<T>;
+  // Attach endpoint tree namespaces on the root for ergonomics:
+  //   client.users.get.call(...)
+  return Object.assign(client, endpoints) as VanillaClient<T>;
 }

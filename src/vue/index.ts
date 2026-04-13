@@ -1,5 +1,10 @@
 /**
- * Vue adapter — scaffold for future implementation.
- * Will use @nanostores/vue for reactivity.
+ * Vue adapter — placeholder.
+ *
+ * Native Vue composables (useQuery/useMutation backed by shallowRef) are not
+ * implemented yet. For now, use the vanilla client and subscribe to
+ * `query.state` / `mutation.state` manually, or bridge Observable<T> into
+ * a `shallowRef` inside your own composable.
  */
-export { createApiClient as createApiClient } from "../vanilla/index";
+export { createClient } from "../core/client";
+export type { VanillaClient } from "../core/client";
