@@ -21,7 +21,7 @@ export type {
 } from "./core/types";
 
 export { ApiError } from "./core/types";
-export { defineEndpoints } from "./schema/define";
+export { defineEndpoints } from "./core/utils";
 export { Fetcher } from "./core/fetcher";
 export { QueryCache } from "./core/cache";
-export { createClient } from "./core/client";
+export { createClient, createRuntime } from "./core/client";

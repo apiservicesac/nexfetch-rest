@@ -117,6 +117,14 @@ export interface ClientOptions<T extends NamespacedEndpoints = NamespacedEndpoin
   onError?: (error: ApiError) => void;
 }
 
+export interface FetcherOptions {
+  baseURL: string;
+  credentials?: RequestCredentials;
+  headers?: Record<string, string>;
+  retry?: Partial<RetryConfig>;
+  onError?: (error: ApiError) => void;
+}
+
 // ── Error ────────────────────────────────────────────────────────────────────
 
 export class ApiError extends Error {

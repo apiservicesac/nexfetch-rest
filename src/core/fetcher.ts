@@ -1,13 +1,5 @@
-import type { EndpointDef, FetchInput, RetryConfig } from "./types";
+import type { EndpointDef, FetcherOptions, FetchInput, RetryConfig } from "./types";
 import { ApiError } from "./types";
-
-export interface FetcherOptions {
-  baseURL: string;
-  credentials?: RequestCredentials;
-  headers?: Record<string, string>;
-  retry?: Partial<RetryConfig>;
-  onError?: (error: ApiError) => void;
-}
 
 const DEFAULT_RETRY: RetryConfig = { retries: 2, retryDelay: 1000, retryOn: [408, 500, 502, 503, 504] };
 
