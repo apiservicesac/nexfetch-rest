@@ -1,12 +1,10 @@
 # @nexfetch/rest
 
-Lightweight REST client with endpoint-level typing, cache, retry, GET deduplication, and tag-based invalidation.
+Typed REST client with endpoint-level typing, reactive cache, retry, GET deduplication, tag-based invalidation, pagination, and runtime schema validation.
 
-Current support:
-
-- React with hooks (`@nexfetch/rest/react`)
-- Vanilla JS with `nanostores` (`@nexfetch/rest/vanilla`)
-- Vue export (`@nexfetch/rest/vue`) as a compatibility layer over the vanilla adapter; it does not provide native Vue composables yet
+- Zero runtime dependencies
+- Works in React, vanilla JS, and any framework that can bridge a minimal `Observable<T>` contract
+- Cache and mutation semantics are explicit — no magic, no hidden behavior
 
 ## Install
 
@@ -14,7 +12,7 @@ Current support:
 npm install @nexfetch/rest
 ```
 
-## Quick Start
+## Quick start
 
 ### 1. Define endpoints
 
@@ -22,345 +20,456 @@ npm install @nexfetch/rest
 import { defineEndpoints } from "@nexfetch/rest";
 import { z } from "zod";
 
-const projectSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-});
+const projectSchema = z.object({ id: z.string(), name: z.string() });
 
 export const projectEndpoints = defineEndpoints({
-  list: {
-    path: "/projects",
-    method: "GET",
-    query: z.object({ orgId: z.string() }),
-    response: z.array(projectSchema),
-    tags: ["projects"],
-    staleTime: 30_000,
-  },
-  get: {
-    path: "/projects/:id",
-    method: "GET",
-    params: z.object({ id: z.string() }),
-    response: projectSchema,
-    tags: ["projects"],
-  },
-  create: {
-    path: "/projects",
-    method: "POST",
-    body: z.object({ name: z.string() }),
-    response: projectSchema,
-    invalidates: ["projects"],
-  },
-  remove: {
-    path: "/projects/:id",
-    method: "DELETE",
-    params: z.object({ id: z.string() }),
-    invalidates: ["projects"],
+  projects: {
+    list: {
+      path: "/projects",
+      method: "GET",
+      query: z.object({ orgId: z.string() }),
+      response: z.array(projectSchema),
+      tags: ["projects"],
+      staleTime: 30_000,
+    },
+    get: {
+      path: "/projects/:id",
+      method: "GET",
+      params: z.object({ id: z.string() }),
+      response: projectSchema,
+      tags: ["projects"],
+    },
+    create: {
+      path: "/projects",
+      method: "POST",
+      body: z.object({ name: z.string() }),
+      response: projectSchema,
+      invalidates: ["projects"],
+    },
+    remove: {
+      path: "/projects/:id",
+      method: "DELETE",
+      params: z.object({ id: z.string() }),
+      invalidates: ["projects"],
+    },
   },
 });
 ```
 
 ### 2. Create the client
 
-```ts
-import { createApiClient } from "@nexfetch/rest/react";
-import { projectEndpoints } from "./projects.endpoints";
+#### React
 
-export const api = createApiClient({
+```ts
+import { createReactClient } from "@nexfetch/rest/react";
+
+export const client = createReactClient({
   baseURL: "https://api.example.com",
   credentials: "include",
+  endpoints: projectEndpoints,
   cache: { staleTime: 30_000, refetchOnFocus: true },
   retry: { retries: 3 },
-  endpoints: {
-    projects: projectEndpoints,
-  },
 });
 ```
 
-### 3. Use it in React
+#### Vanilla
+
+```ts
+import { createClient } from "@nexfetch/rest";
+
+export const client = createClient({
+  baseURL: "https://api.example.com",
+  endpoints: projectEndpoints,
+});
+```
+
+### 3. Use it
+
+#### React
 
 ```tsx
 function ProjectList() {
-  const { data, isPending, error } = api.projects.useQuery("list", {
-    query: { orgId: "acme" },
-  });
+  const { data, status, error } = client.useQuery(
+    client.projects.list,
+    { query: { orgId: "acme" } },
+  );
 
-  if (isPending) return <p>Loading...</p>;
+  if (status === "pending") return <p>Loading...</p>;
   if (error) return <p>{error.message}</p>;
 
-  return <ul>{data?.map((project) => <li key={project.id}>{project.name}</li>)}</ul>;
+  return <ul>{data?.map((p) => <li key={p.id}>{p.name}</li>)}</ul>;
 }
 
 function CreateProjectButton() {
-  const createProject = api.projects.useMutation("create");
+  const createProject = client.useMutation(client.projects.create);
 
   return (
     <button
-      disabled={createProject.isPending}
-      onClick={() => createProject.mutate({ body: { name: "New project" } })}
+      disabled={createProject.status === "pending"}
+      onClick={() => createProject.mutate({ body: { name: "New" } })}
     >
-      {createProject.isPending ? "Creating..." : "Create project"}
+      Create
     </button>
   );
 }
 ```
 
-## API shape
-
-All endpoints use the same input shape:
+#### Vanilla
 
 ```ts
-type FetchInput = {
-  body?: unknown;
-  query?: unknown;
-  params?: Record<string, string>;
-};
+// Direct HTTP call (no cache):
+const projects = await client.projects.list.call({ query: { orgId: "acme" } });
+
+// Reactive cached query:
+const q = client.query(client.projects.list, { query: { orgId: "acme" } });
+const unsubscribe = q.state.subscribe((s) => console.log(s.data));
+await q.refetch();
+q.dispose();
+
+// Mutation:
+const m = client.mutation(client.projects.create);
+await m.mutate({ body: { name: "Portal" } });
+
+// Tag invalidation:
+client.cache.invalidateByTag("projects");
 ```
 
-Examples:
+## Core concepts
+
+### Endpoints are callable nodes
+
+Each endpoint becomes an `EndpointNode` with exactly **one** method: `.call(input)`. Endpoint names can be anything — including `fetch`, `query`, `useQuery` — without colliding with framework methods.
 
 ```ts
-api.projects.useQuery("list", { query: { orgId: "acme" } });
-api.projects.useQuery("get", { params: { id: "p_123" } });
-
-const createProject = api.projects.useMutation("create");
-await createProject.mutate({ body: { name: "Portal" } });
-
-await api.projects.remove({ params: { id: "p_123" } });
-```
-
-## Current capabilities
-
-### Cache and deduplication
-
-- Queries are cached by `namespace + endpoint + input`
-- Two identical GET requests share the same in-flight request
-- `staleTime` can be configured globally or per endpoint
-- Entries with no subscribers are removed after `gcTime`
-
-```ts
-createApiClient({
-  cache: {
-    staleTime: 30_000,
-    gcTime: 5 * 60 * 1000,
-    refetchOnFocus: true,
+// Literally naming an endpoint "fetch" is fine:
+endpoints: {
+  users: {
+    fetch: { path: "/users/fetch", method: "POST", body: QuerySchema },
   },
-  endpoints,
-  baseURL: "https://api.example.com",
-});
+}
+
+// No collision:
+await client.users.fetch.call({ body: { q: "ada" } });
 ```
 
-### Tag-based invalidation
+### Two ways to call an endpoint — and they mean different things
 
-Queries can declare `tags` and mutations can declare `invalidates`. When a mutation succeeds, those tags are invalidated and active queries are fetched again.
+| Call | Cache? | Reactive? | Returns |
+|---|---|---|---|
+| `client.<ns>.<name>.call(input)` | No | No | `Promise<Output>` |
+| `client.query(endpoint, input)` | Yes | Yes (`Observable<QueryState>`) | `Query<I,O>` |
+
+There is no hidden third way. Direct calls never touch the cache. Cached calls always go through `client.query(...)` or one of the hooks.
+
+### Operations live on the root client
+
+`query`, `mutation`, `infiniteQuery`, and `cache` are methods of the **root client**, not per-endpoint properties. This is why endpoint names can be anything — they never compete with framework names.
 
 ```ts
-const members = defineEndpoints({
-  list: {
-    path: "/members",
-    method: "GET",
-    tags: ["members"],
-  },
-  create: {
-    path: "/members",
-    method: "POST",
-    invalidates: ["members"],
-  },
-});
+client.query(endpoint, input);
+client.mutation(endpoint);
+client.infiniteQuery(endpoint, { pagination });
+client.cache.invalidateByTag("tag");
 ```
 
-### Retry
+### Per-subscription `select`
 
-Requests use exponential backoff for the configured status codes.
+`select` is a projection applied at the subscription level, **not** baked into the cache entry. Two components can observe the same cache key with different projections, each receiving its own derived state.
 
 ```ts
-createApiClient({
-  baseURL: "https://api.example.com",
-  endpoints,
-  retry: {
-    retries: 3,
-    retryDelay: 1000,
-    retryOn: [408, 500, 502, 503, 504],
-  },
-});
+// Component A sees the user's name
+client.useQuery(client.users.get, input, { select: (u) => u.name });
+// Component B sees the full object — same cache entry, different view
+client.useQuery(client.users.get, input);
 ```
 
-### Polling
+### Schema validation runs before the request
 
-`useQuery` in React supports `refetchInterval`.
+If an endpoint declares a `body`, `query`, or `params` schema, the input is validated **before** the HTTP request is sent. A `ValidationError` is thrown and the network call never happens. `response` schemas are still applied to the returned JSON as before.
 
-```ts
-api.projects.useQuery("list", { query: { orgId: "acme" } }, { refetchInterval: 10_000 });
+### Missing path params throw a clear error
+
+If the path is `/users/:id` and you don't pass `params`, you get:
+
+```
+Missing path params: :id in "/users/:id". Pass them as { params: { ... } }
 ```
 
-### Infinite query
+before the request is built.
 
-`useInfiniteQuery` currently exists only in the React adapter and supports:
-
-- `offset`
-- `cursor`
-- `total`
-
-```ts
-const repos = api.projects.useInfiniteQuery("list", {
-  query: { orgId: "acme" },
-  pagination: { type: "offset", pageSize: 20 },
-});
-
-await repos.fetchNext();
-```
-
-### Direct fetch without hooks
-
-You can also call endpoints directly and get a plain `Promise`.
-
-```ts
-const projects = await api.projects.list({ query: { orgId: "acme" } });
-await api.projects.remove({ params: { id: "p_123" } });
-```
-
-## Schemas: what they validate today
-
-The schema system is validator-agnostic: any object with a `.parse()` method works.
-
-```ts
-import { z } from "zod";
-
-response: z.array(projectSchema);
-```
-
-Current runtime validation behavior:
-
-- `response`: if present, `schema.parse(data)` runs against the received JSON
-- `body`: contributes TypeScript types, but is not automatically validated before sending the request
-- `query`: contributes TypeScript types, but is not automatically validated before building the URL
-- `params`: contributes TypeScript types, but is not automatically validated before interpolating the path
-
-In practice, current runtime validation is concentrated on `response`.
-
-## Transform and select
-
-`transform` exists at the endpoint level and runs before the final value is stored in cache.
-
-```ts
-const notifications = defineEndpoints({
-  list: {
-    path: "/notifications",
-    method: "GET",
-    transform: (data) => (data as { data: unknown[] }).data,
-  },
-});
-```
-
-Important notes:
-
-- If you also define `response`, the response is parsed first and `transform` runs after that
-- In `useQuery`, the current `select` behavior is applied when the cache entry for that key is created, so it should not be treated as an isolated per-component projection
-
-## Adapters
-
-### React
-
-```ts
-import { createApiClient } from "@nexfetch/rest/react";
-```
-
-This is the most complete adapter today. It includes:
-
-- `useQuery`
-- `useMutation`
-- `useInfiniteQuery`
-- direct endpoint calls
-
-### Vanilla
-
-```ts
-import { createApiClient } from "@nexfetch/rest/vanilla";
-```
-
-It exposes:
-
-- `query(key, input)` to get a cached `nanostores` entry
-- `mutation(key)` to run mutations
-- `fetch(key, input)` for direct requests
-- `invalidateByTag(tag)` for manual invalidation
-
-```ts
-const api = createApiClient({
-  baseURL: "https://api.example.com",
-  endpoints: { projects: projectEndpoints },
-});
-
-const entry = api.projects.query("list", { query: { orgId: "acme" } });
-const unsubscribe = entry.$state.subscribe((state) => {
-  console.log(state.data, state.isFetching);
-});
-
-const createProject = api.projects.mutation("create");
-await createProject.mutate({ body: { name: "Portal" } });
-
-unsubscribe();
-```
-
-### Vue
-
-```ts
-import { createApiClient } from "@nexfetch/rest/vue";
-```
-
-Today this export reuses the vanilla adapter. It works as a compatible entry point, but it does not provide native Vue composables yet.
-
-There is no public Solid support in this package today.
-
-## When to use this library
-
-| Tool | Use it when | Avoid it when |
-|---|---|---|
-| `fetch` | You want full control and your cache, retry, and invalidation needs are minimal or fully custom | You do not want to hand-roll wrappers, error handling, deduplication, and invalidation |
-| `ky` | You want a small HTTP wrapper with good request DX and you are comfortable building data hooks on top | You need declarative cache, tag invalidation, and ready-made hooks |
-| `@nexfetch/rest` | You want something more structured than `fetch` or `ky`, with typed endpoints, simple cache, and invalidation, without moving into a heavier stack | You need advanced server-state workflows, mature devtools, strong SSR or hydration support, or a larger ecosystem |
-| TanStack Query | You need the broadest server-state feature set, ecosystem, and advanced patterns | You want a smaller, more opinionated layer for CRUD apps or dashboards |
-
-## API Reference
+## API reference
 
 ### Endpoint definition
 
-| Field | Type | Description |
-|---|---|---|
-| `path` | `string` | URL path with `:param` interpolation |
-| `method` | `"GET" \| "POST" \| "PUT" \| "DELETE" \| "PATCH"` | HTTP method |
-| `body` | `Schema` | Schema used for body type inference |
-| `query` | `Schema` | Schema used for query type inference |
-| `params` | `Schema` | Schema used for path param type inference |
-| `response` | `Schema` | Schema used to parse and validate the response |
-| `headers` | `Record<string, string>` | Extra headers |
-| `staleTime` | `number` | Per-endpoint staleness in ms |
-| `tags` | `string[]` | Tags attached to queries |
-| `invalidates` | `string[]` | Tags to invalidate after mutation success |
-| `transform` | `(raw: unknown) => unknown` | Transformation applied before writing to cache |
+```ts
+interface EndpointDef {
+  path: string;                // e.g. "/users/:id"
+  method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  body?: Schema;               // input schema — also drives TS types
+  query?: Schema;
+  params?: Schema;
+  response?: Schema;           // parses the response JSON
+  headers?: Record<string, string>;
+  staleTime?: number;
+  tags?: string[];             // for invalidateByTag
+  invalidates?: string[];      // tags that this mutation invalidates
+  retry?: Partial<RetryConfig>;// per-endpoint retry override
+  transform?: (raw: unknown) => unknown;
+}
+```
+
+### Input shape
+
+A single canonical input shape, inferred from the schemas:
+
+```ts
+client.projects.list.call({ query: { orgId: "acme" } });
+client.projects.get.call({ params: { id: "p_123" } });
+client.projects.create.call({ body: { name: "Portal" } });
+```
+
+If an endpoint has no `body`/`query`/`params` schema, its input type is `void`.
 
 ### Client options
 
-| Option | Type | Default |
-|---|---|---|
-| `baseURL` | `string` | required |
-| `credentials` | `RequestCredentials` | `undefined` |
-| `headers` | `Record<string, string>` | `undefined` |
-| `endpoints` | `NamespacedEndpoints` | required |
-| `cache.staleTime` | `number` | `0` |
-| `cache.gcTime` | `number` | `300000` |
-| `cache.refetchOnFocus` | `boolean` | `false` |
-| `retry.retries` | `number` | `2` |
-| `retry.retryDelay` | `number` | `1000` |
-| `retry.retryOn` | `number[]` | `[408, 500, 502, 503, 504]` |
-| `onError` | `(error: ApiError) => void` | `undefined` |
+```ts
+interface ClientOptions<T> {
+  baseURL: string;
+  endpoints: T;
+  credentials?: RequestCredentials;
+  headers?: Record<string, string>;
+  cache?: {
+    staleTime?: number;       // default 0
+    gcTime?: number;          // default 5 * 60 * 1000
+    refetchOnFocus?: boolean; // default false
+  };
+  retry?: {
+    retries?: number;         // default 2
+    retryDelay?: number;      // default 1000
+    retryOn?: number[];       // default [408, 500, 502, 503, 504]
+  };
+  onError?: (error: ApiError) => void;
+}
+```
 
-### React query options
+### Vanilla client surface
 
-| Option | Type | Description |
+```ts
+interface VanillaClient<T> extends EndpointTree<T> {
+  readonly cache: QueryCache;
+
+  query<I, O>(endpoint: EndpointNode<I, O>, input: I): Query<I, O>;
+  mutation<I, O>(endpoint: EndpointNode<I, O>, opts?: MutationOptions<I, O>): Mutation<I, O>;
+  infiniteQuery<I, O>(endpoint: EndpointNode<I, O>, opts: InfiniteQueryOptions<I>): InfiniteQuery<I, O>;
+}
+```
+
+### React client surface
+
+A `ReactClient<T>` is a `VanillaClient<T>` with hooks attached:
+
+```ts
+interface ReactClientExtensions {
+  useQuery<I, O, Sel = O>(
+    endpoint: EndpointNode<I, O>,
+    input: I,
+    opts?: { enabled?: boolean; refetchInterval?: number; select?: (data: O) => Sel },
+  ): QueryState<Sel>;
+
+  useMutation<I, O>(endpoint: EndpointNode<I, O>): UseMutationResult<I, O>;
+
+  useInfiniteQuery<I, O>(
+    endpoint: EndpointNode<I, O>,
+    opts: InfiniteQueryOptions<I>,
+  ): UseInfiniteQueryResult<O>;
+}
+```
+
+Calling `.useQuery` on a **vanilla** client is a TypeScript error — not a runtime throw.
+
+### Query handle
+
+```ts
+class Query<I, O> {
+  readonly state: Observable<QueryState<O>>;
+  project<Sel>(select: (data: O) => Sel): Observable<QueryState<Sel>>;
+  refetch(): Promise<void>;
+  invalidate(): void;
+  dispose(): void;
+}
+
+interface QueryState<T> {
+  data: T | undefined;
+  error: Error | undefined;
+  status: "idle" | "pending" | "success" | "error";
+  isFetching: boolean;
+}
+```
+
+### Mutation handle
+
+```ts
+class Mutation<I, O> {
+  readonly state: Observable<MutationState<O>>;
+  mutate(input: I, opts?: MutationOptions<I, O>): Promise<O>;
+  reset(): void;
+}
+
+interface MutationState<T> {
+  data: T | undefined;
+  error: Error | undefined;
+  status: "idle" | "pending" | "success" | "error";
+}
+```
+
+### Infinite query handle
+
+Works from **any** framework (vanilla, React, Vue). Each page is stored in the shared cache with the endpoint's tags, so `invalidateByTag` reaches paginated data.
+
+```ts
+interface InfiniteQueryOptions<I> {
+  input?: I;
+  pagination:
+    | { type: "offset"; pageSize: number; pageParam?: string }
+    | { type: "cursor"; cursorField: string; cursorParam?: string }
+    | { type: "total"; totalField: string; pageSize: number; pageParam?: string };
+  enabled?: boolean;
+}
+
+class InfiniteQuery<I, O> {
+  readonly state: Observable<InfiniteQueryState<O>>;
+  fetchNext(): Promise<void>;
+  refetch(): Promise<void>;
+  dispose(): void;
+}
+
+interface InfiniteQueryState<T> {
+  pages: T[][];
+  flat: T[];
+  status: "idle" | "pending" | "success" | "error";
+  error: Error | undefined;
+  isFetchingMore: boolean;
+  hasMore: boolean;
+}
+```
+
+## Observables — the reactive contract
+
+`@nexfetch/rest` exposes a minimal reactive contract called `Observable<T>`:
+
+```ts
+interface Observable<T> {
+  get(): T;
+  subscribe(listener: (value: T) => void): () => void;
+}
+```
+
+`Query.state`, `Mutation.state`, and `InfiniteQuery.state` are all `Observable<...>`. The React adapter bridges them via `useSyncExternalStore`. Writing an adapter for Vue, Solid, Svelte, or Preact Signals requires only a small bridge to their respective reactive primitive.
+
+A 40-line in-house implementation powers this — no external reactive library is required.
+
+## Cache
+
+```ts
+class QueryCache {
+  getOrCreate<T>(key: string, fetcher, meta): CacheEntry<T>;
+  get<T>(key: string): CacheEntry<T> | undefined;
+  subscribe(key: string): () => void;
+  invalidateByTag(tag: string): void;
+  invalidateByKey(key: string): void;
+  ensureFresh(key: string): void;
+}
+```
+
+Features:
+
+- Stable query keys derived from endpoint path + input (order-independent, nested objects supported)
+- Tag index for O(1) invalidation by tag
+- Reference-counted subscriptions with `gcTime`-delayed cleanup
+- Optional refetch-on-visibilitychange
+- Same entries are shared between `client.query(...)` calls and hooks
+
+## Retry
+
+Exponential backoff on configured HTTP status codes. Configurable globally or **per endpoint**:
+
+```ts
+endpoints: {
+  flakyApi: {
+    get: { path: "/thing", method: "GET", retry: { retries: 5 } },
+  }
+}
+```
+
+## Deduplication
+
+Concurrent GET requests with the same method+path+input share a single in-flight promise. Non-GET methods are never deduplicated.
+
+## Validation
+
+| Schema field | When it runs | What happens on failure |
 |---|---|---|
-| `enabled` | `boolean` | Enables or disables the query |
-| `refetchInterval` | `number` | Polling interval in ms |
-| `select` | `(data: unknown) => unknown` | Projection applied to the value associated with that cache key |
+| `params` | Before building the URL | `ValidationError` thrown; request never sent |
+| `query`  | Before building the URL | `ValidationError` thrown; request never sent |
+| `body`   | Before the fetch call | `ValidationError` thrown; request never sent |
+| `response` | After JSON is parsed | `ValidationError` thrown; caller sees the rejection |
+
+Any object with a `.parse()` method works (Zod, Valibot, Arktype, custom).
+
+## React hooks
+
+```ts
+import { useQuery, useMutation, useInfiniteQuery, useObservable } from "@nexfetch/rest/react";
+```
+
+The hooks are also available bound to a specific client as `client.useQuery` / `client.useMutation` / `client.useInfiniteQuery` via `createReactClient`.
+
+`useObservable(obs)` is exported so you can subscribe to arbitrary `Observable<T>` values from components (e.g., `Query.project(...)` results).
+
+## Vue
+
+```ts
+import { createClient } from "@nexfetch/rest/vue";
+```
+
+Today this re-exports the vanilla client. Native Vue composables (backed by `shallowRef`) are a roadmap item. In the meantime you can write a small bridge:
+
+```ts
+import { shallowRef } from "vue";
+import type { Observable } from "@nexfetch/rest";
+
+export function useObservable<T>(obs: Observable<T>) {
+  const state = shallowRef(obs.get());
+  obs.subscribe((v) => (state.value = v));
+  return state;
+}
+```
+
+## Migration from 0.x
+
+| 0.x | 1.0 |
+|---|---|
+| `createApiClient` (from `/react`) | `createReactClient` (from `/react`) |
+| `createApiClient` (from `/vanilla`) | `createClient` (from root) |
+| `api.projects.useQuery("list", input)` | `client.useQuery(client.projects.list, input)` |
+| `api.projects.useMutation("create")` | `client.useMutation(client.projects.create)` |
+| `api.projects.useInfiniteQuery("list", opts)` | `client.useInfiniteQuery(client.projects.list, opts)` |
+| `api.projects.query("list", input)` | `client.query(client.projects.list, input)` |
+| `api.projects.mutation("create")` | `client.mutation(client.projects.create)` |
+| `api.projects.fetch("list", input)` | `client.projects.list.call(input)` |
+| `api.projects.list(input)` | `client.projects.list.call(input)` |
+| `api.projects.invalidateByTag("tag")` | `client.cache.invalidateByTag("tag")` |
+| `entry.$state.subscribe(fn)` | `query.state.subscribe(fn)` |
+| `{ isPending, error }` | `{ status, error }` — `status` is `"idle" \| "pending" \| "success" \| "error"` |
+
+## When to use this library
+
+| Tool | Use when | Avoid when |
+|---|---|---|
+| `fetch` | Minimal needs, full control | You don't want to reimplement cache/dedupe/invalidation |
+| `ky` | You want a small HTTP wrapper | You need cached reactive queries and tag invalidation |
+| `@nexfetch/rest` | You want typed endpoints, explicit cache semantics, zero-dep reactivity, per-subscription select | You need mature devtools, SSR hydration, or TanStack's ecosystem |
+| TanStack Query | Broadest feature set, biggest ecosystem | You want a smaller, opinionated layer |
 
 ## License
 
