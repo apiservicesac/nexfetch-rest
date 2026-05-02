@@ -22,7 +22,14 @@ export interface ReactClientExtensions {
 
 export type ReactClient<T extends NamespacedEndpoints> = VanillaClient<T> & ReactClientExtensions;
 
+const REACT_RESERVED = new Set(["useQuery", "useMutation", "useInfiniteQuery"]);
+
 export function createReactClient<T extends NamespacedEndpoints>(options: ClientOptions<T>): ReactClient<T> {
+  const collisions = Object.keys(options.endpoints).filter((ns) => REACT_RESERVED.has(ns));
+  if (collisions.length > 0) {
+    throw new Error(`Endpoint namespace(s) collide with React client hooks: ${collisions.join(", ")}.`);
+  }
+
   const client = createClient(options);
 
   const reactExtensions: ReactClientExtensions = {

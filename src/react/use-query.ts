@@ -2,8 +2,11 @@ import { useEffect, useMemo } from "react";
 import type { Client } from "../core/client";
 import type { EndpointNode } from "../core/endpoint";
 import type { QueryOptions, QueryState } from "../core/types";
+import type { Observable } from "../core/observable";
 import { stableHash } from "../core/key";
 import { useObservable } from "./use-observable";
+
+const IDLE_STATE = { data: undefined, error: undefined, status: "idle" as const, isFetching: false };
 
 export function useQuery<I, O, Sel = O>(
   client: Client<any>,
@@ -20,9 +23,7 @@ export function useQuery<I, O, Sel = O>(
     [endpoint, inputKey, enabled],
   );
 
-  useEffect(() => {
-    return () => query?.dispose();
-  }, [query]);
+  useEffect(() => () => query?.dispose(), [query]);
 
   useEffect(() => {
     if (!query || !opts?.refetchInterval) return;
@@ -30,17 +31,14 @@ export function useQuery<I, O, Sel = O>(
     return () => clearInterval(timer);
   }, [query, opts?.refetchInterval]);
 
-  const projected = useMemo(() => {
-    if (!query) return null;
-    return opts?.select ? query.project(opts.select) : (query.state as unknown);
+  const projected = useMemo<Observable<QueryState<Sel>> | null>(
+    () => {
+      if (!query) return null;
+      return opts?.select ? query.project(opts.select) : (query.state as unknown as Observable<QueryState<Sel>>);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, opts?.select]);
+    [query, opts?.select],
+  );
 
-  const state = useObservable((projected ?? EMPTY_STATE) as any) as QueryState<Sel>;
-  return state;
+  return useObservable(projected) ?? (IDLE_STATE as QueryState<Sel>);
 }
-
-const EMPTY_STATE = {
-  get: () => ({ data: undefined, error: undefined, status: "idle" as const, isFetching: false }),
-  subscribe: () => () => {},
-};

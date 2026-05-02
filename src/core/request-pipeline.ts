@@ -28,10 +28,10 @@ export class RequestPipeline {
 
   async execute<T = unknown>(
     endpoint: EndpointDef,
-    input: FetchInput | undefined,
+    input: unknown,
     opts?: { signal?: AbortSignal },
   ): Promise<T> {
-    const validated = validateInput(endpoint, input);
+    const validated = validateInput(endpoint, input as FetchInput | undefined);
     const retry = { ...this.defaultRetry, ...endpoint.retry };
 
     const run = () => withRetry(retry, () => this.http.request({
@@ -44,50 +44,37 @@ export class RequestPipeline {
       signal: opts?.signal,
     }));
 
-    let raw: unknown;
-    if (endpoint.method === "GET") {
-      const key = stableRequestKey(endpoint, validated);
-      const existing = this.inflight.get(key);
-      if (existing) {
-        raw = await existing;
-      } else {
-        const promise = run();
-        this.inflight.set(key, promise);
-        try {
-          raw = await promise;
-        } finally {
-          this.inflight.delete(key);
-        }
-      }
-    } else {
-      raw = await run();
-    }
+    const raw = endpoint.method === "GET"
+      ? await this.dedupe(stableRequestKey(endpoint, validated), run)
+      : await run();
 
     return finalizeResponse(endpoint, raw) as T;
+  }
+
+  private async dedupe<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const existing = this.inflight.get(key);
+    if (existing) return existing as Promise<T>;
+    const promise = run().finally(() => this.inflight.delete(key));
+    this.inflight.set(key, promise);
+    return promise;
   }
 }
 
 // ── validation ───────────────────────────────────────────────────────────────
 
 function validateInput(endpoint: EndpointDef, input: FetchInput | undefined): FetchInput | undefined {
-  const hasPathParams = endpoint.path.includes(":");
-  if (hasPathParams && !input?.params) {
+  if (endpoint.path.includes(":") && !input?.params) {
     const missing = endpoint.path.match(/:(\w+)/g)!;
     throw new Error(`Missing path params: ${missing.join(", ")} in "${endpoint.path}". Pass them as { params: { ... } }`);
   }
   if (!input) return input;
 
-  let next = input;
-  if (endpoint.params && input.params) {
-    next = { ...next, params: parseWith(endpoint.params, input.params, "params") as Record<string, string> };
-  }
-  if (endpoint.query && input.query !== undefined) {
-    next = { ...next, query: parseWith(endpoint.query, input.query, "query") };
-  }
-  if (endpoint.body && input.body !== undefined) {
-    next = { ...next, body: parseWith(endpoint.body, input.body, "body") };
-  }
-  return next;
+  return {
+    ...input,
+    ...(endpoint.params && input.params  && { params: parseWith(endpoint.params, input.params, "params") as Record<string, string> }),
+    ...(endpoint.query  && input.query  !== undefined && { query: parseWith(endpoint.query,  input.query,  "query") }),
+    ...(endpoint.body   && input.body   !== undefined && { body:  parseWith(endpoint.body,   input.body,   "body") }),
+  };
 }
 
 function parseWith(schema: { parse(data: unknown): unknown }, data: unknown, field: "body" | "query" | "params"): unknown {
@@ -123,8 +110,6 @@ async function withRetry<T>(config: RetryConfig, fn: () => Promise<T>): Promise<
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ── dedupe key ───────────────────────────────────────────────────────────────
 
 function stableRequestKey(endpoint: EndpointDef, input: FetchInput | undefined): string {
   return `${endpoint.method} ${endpoint.path} ${JSON.stringify(input ?? null)}`;

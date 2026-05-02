@@ -11,6 +11,7 @@ export interface CacheEntry<T = unknown> {
   readonly staleTime: number;
   fetchedAt: number;
   subscribers: number;
+  inflight: Promise<void> | null;
   fetch(): Promise<void>;
 }
 
@@ -39,12 +40,24 @@ export class QueryCache {
     fetchFn: () => Promise<T>,
     meta: { tags?: string[]; staleTime?: number },
   ): CacheEntry<T> {
-    const existing = this.entries.get(key);
+    const existing = this.entries.get(key) as CacheEntry<T> | undefined;
     if (existing) {
       this.cancelGc(key);
-      return existing as CacheEntry<T>;
+      return existing;
     }
 
+    const entry = this.createEntry(key, fetchFn, meta);
+    this.entries.set(key, entry);
+    this.indexTags(key, entry.tags);
+    entry.fetch();
+    return entry;
+  }
+
+  private createEntry<T>(
+    key: string,
+    fetchFn: () => Promise<T>,
+    meta: { tags?: string[]; staleTime?: number },
+  ): CacheEntry<T> {
     const state = observable<QueryState<T>>({
       data: undefined,
       error: undefined,
@@ -52,9 +65,7 @@ export class QueryCache {
       isFetching: false,
     });
 
-    const tags = new Set(meta.tags ?? []);
-
-    const doFetch = async () => {
+    const run = async () => {
       const current = state.get();
       state.set({
         ...current,
@@ -67,23 +78,21 @@ export class QueryCache {
         entry.fetchedAt = Date.now();
       } catch (error) {
         state.set({ ...state.get(), error: toError(error), status: "error", isFetching: false });
+      } finally {
+        entry.inflight = null;
       }
     };
 
     const entry: CacheEntry<T> = {
       key,
       state,
-      tags,
+      tags: new Set(meta.tags ?? []),
       staleTime: meta.staleTime ?? this.config.staleTime,
       fetchedAt: 0,
       subscribers: 0,
-      fetch: doFetch,
+      inflight: null,
+      fetch: () => (entry.inflight ??= run()),
     };
-
-    this.entries.set(key, entry);
-    this.indexTags(key, tags);
-    doFetch();
-
     return entry;
   }
 

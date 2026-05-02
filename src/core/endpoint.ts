@@ -14,7 +14,7 @@ export class EndpointNode<I = unknown, O = unknown> {
   ) {}
 
   call(input: I, opts?: { signal?: AbortSignal }): Promise<O> {
-    return this.pipeline.execute<O>(this.def, input as unknown as { body?: unknown; query?: unknown; params?: Record<string, string> }, opts);
+    return this.pipeline.execute<O>(this.def, input, opts);
   }
 }
 

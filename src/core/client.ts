@@ -24,7 +24,14 @@ export interface Client<T extends NamespacedEndpoints> {
  */
 export type VanillaClient<T extends NamespacedEndpoints> = Client<T> & EndpointTree<T>;
 
+const RESERVED = new Set(["endpoints", "cache", "pipeline", "query", "mutation", "infiniteQuery"]);
+
 export function createClient<T extends NamespacedEndpoints>(options: ClientOptions<T>): VanillaClient<T> {
+  const collisions = Object.keys(options.endpoints).filter((ns) => RESERVED.has(ns));
+  if (collisions.length > 0) {
+    throw new Error(`Endpoint namespace(s) collide with client API: ${collisions.join(", ")}. Reserved: ${[...RESERVED].join(", ")}.`);
+  }
+
   const http = new HttpClient({
     baseURL: options.baseURL,
     credentials: options.credentials,
